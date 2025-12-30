@@ -1,6 +1,7 @@
+# bot.py - FIXED for Discord.py 2.0+
 import discord
 from discord.ext import commands
-from discord import slash_commands
+from discord import app_commands
 import json
 import os
 from datetime import datetime
@@ -10,7 +11,7 @@ import random
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
-GUILD = os.getenv('DISCORD_GUILD')
+GUILD_ID = os.getenv('DISCORD_GUILD')
 
 # Initialize bot with all intents
 intents = discord.Intents.all()
@@ -58,9 +59,16 @@ def init_user(user_id, data):
 
 @bot.event
 async def on_ready():
-    """Bot is ready"""
+    """Bot is ready and syncing commands"""
     print(f'✅ {bot.user} is now online!')
     print(f'📊 Serving {len(bot.guilds)} guild(s)')
+    
+    try:
+        # Sync slash commands
+        synced = await bot.tree.sync()
+        print(f"✅ Synced {len(synced)} slash commands")
+    except Exception as e:
+        print(f"❌ Failed to sync commands: {e}")
     
     # Set bot activity
     activity = discord.Activity(
@@ -72,6 +80,8 @@ async def on_ready():
 @bot.event
 async def on_presence_update(before, after):
     """Track when users start/stop gaming"""
+    if after.bot: return
+    
     data = load_data()
     user_id = str(after.id)
     
@@ -112,11 +122,11 @@ async def on_presence_update(before, after):
 # ECONOMY COMMANDS
 # ============================================
 
-@bot.slash_command(description="Check your balance")
-async def balance(ctx):
+@bot.tree.command(name="balance", description="Check your balance")
+async def balance(interaction: discord.Interaction):
     """Show user's balance"""
     data = load_data()
-    user_id = str(ctx.author.id)
+    user_id = str(interaction.user.id)
     data = init_user(user_id, data)
     save_data(data)
     
@@ -126,7 +136,7 @@ async def balance(ctx):
     level = user_data["level"]
     
     embed = discord.Embed(
-        title=f"💰 {ctx.author.name}'s Balance",
+        title=f"💰 {interaction.user.name}'s Balance",
         color=discord.Color.gold()
     )
     embed.add_field(name="Wallet", value=f"`{balance}` coins", inline=True)
@@ -134,20 +144,20 @@ async def balance(ctx):
     embed.add_field(name="Level", value=f"`{level}`", inline=True)
     embed.add_field(name="Net Worth", value=f"`{balance + bank}` coins", inline=False)
     
-    await ctx.respond(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(description="Claim your daily reward")
-async def daily(ctx):
+@bot.tree.command(name="daily", description="Claim your daily reward")
+async def daily(interaction: discord.Interaction):
     """Daily reward system"""
     data = load_data()
-    user_id = str(ctx.author.id)
+    user_id = str(interaction.user.id)
     data = init_user(user_id, data)
     
     last_claimed = data[user_id]["daily_claimed"]
     today = datetime.now().strftime("%Y-%m-%d")
     
     if last_claimed == today:
-        await ctx.respond("❌ Already claimed today! Come back tomorrow.")
+        await interaction.response.send_message("❌ Already claimed today! Come back tomorrow.", ephemeral=True)
         return
     
     reward = 500  # Daily reward
@@ -163,10 +173,10 @@ async def daily(ctx):
     embed.add_field(name="Reward", value=f"+{reward} coins", inline=True)
     embed.add_field(name="New Balance", value=f"`{data[user_id]['balance']}`", inline=True)
     
-    await ctx.respond(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(description="Global leaderboard")
-async def leaderboard(ctx):
+@bot.tree.command(name="leaderboard", description="Global leaderboard")
+async def leaderboard(interaction: discord.Interaction):
     """Show top richest players"""
     data = load_data()
     
@@ -184,7 +194,7 @@ async def leaderboard(ctx):
     
     if not sorted_users:
         embed.description = "No players yet!"
-        await ctx.respond(embed=embed)
+        await interaction.response.send_message(embed=embed)
         return
     
     for idx, (user_id, user_data) in enumerate(sorted_users, 1):
@@ -199,18 +209,22 @@ async def leaderboard(ctx):
         except:
             pass
     
-    await ctx.respond(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
 # ============================================
 # GAMING COMMANDS
 # ============================================
 
-@bot.slash_command(description="See who's gaming right now")
-async def active_players(ctx):
+@bot.tree.command(name="active_players", description="See who's gaming right now")
+async def active_players(interaction: discord.Interaction):
     """List members currently gaming"""
-    guild = ctx.guild
+    guild = interaction.guild
     gaming_members = []
     
+    if not guild:
+        await interaction.response.send_message("This command can only be used in a server.")
+        return
+
     for member in guild.members:
         if member.activity and member.activity.type == discord.ActivityType.playing:
             gaming_members.append((member.name, member.activity.name))
@@ -227,13 +241,13 @@ async def active_players(ctx):
             embed.add_field(name=name, value=f"`{game}`", inline=False)
     
     embed.set_footer(text=f"Total: {len(gaming_members)} players")
-    await ctx.respond(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(description="See someone's playtime stats")
-async def playtime(ctx, member: discord.Member = None):
+@bot.tree.command(name="playtime", description="See someone's playtime stats")
+async def playtime(interaction: discord.Interaction, member: discord.Member = None):
     """Show playtime statistics"""
     if member is None:
-        member = ctx.author
+        member = interaction.user
     
     data = load_data()
     user_id = str(member.id)
@@ -242,7 +256,7 @@ async def playtime(ctx, member: discord.Member = None):
     sessions = data[user_id]["playtime_sessions"]
     
     if not sessions:
-        await ctx.respond(f"❌ {member.name} has no playtime data yet.")
+        await interaction.response.send_message(f"❌ {member.name} has no playtime data yet.")
         return
     
     # Calculate total playtime
@@ -250,15 +264,18 @@ async def playtime(ctx, member: discord.Member = None):
     games_played = {}
     
     for session in sessions:
-        start = datetime.fromisoformat(session["start"])
-        end = datetime.fromisoformat(session["end"])
-        duration = (end - start).total_seconds()
-        total_seconds += duration
-        
-        game = session.get("game", "Unknown")
-        if game not in games_played:
-            games_played[game] = 0
-        games_played[game] += duration
+        try:
+            start = datetime.fromisoformat(session["start"])
+            end = datetime.fromisoformat(session["end"])
+            duration = (end - start).total_seconds()
+            total_seconds += duration
+            
+            game = session.get("game", "Unknown")
+            if game not in games_played:
+                games_played[game] = 0
+            games_played[game] += duration
+        except:
+            continue
     
     total_hours = total_seconds / 3600
     
@@ -275,30 +292,31 @@ async def playtime(ctx, member: discord.Member = None):
         top_hours = games_played[top_game] / 3600
         embed.add_field(name="Most Played Game", value=f"`{top_game}` ({top_hours:.1f}h)", inline=True)
     
-    await ctx.respond(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
 # ============================================
 # MINI GAMES
 # ============================================
 
-@bot.slash_command(description="Flip a coin to gamble")
-async def coinflip(ctx, amount: int, choice: str):
+@bot.tree.command(name="coinflip", description="Flip a coin to gamble")
+@app_commands.describe(choice="heads or tails")
+async def coinflip(interaction: discord.Interaction, amount: int, choice: str):
     """Gamble coins on a coin flip (heads/tails)"""
     data = load_data()
-    user_id = str(ctx.author.id)
+    user_id = str(interaction.user.id)
     data = init_user(user_id, data)
     
     # Validate input
     if amount <= 0:
-        await ctx.respond("❌ Amount must be positive!")
+        await interaction.response.send_message("❌ Amount must be positive!", ephemeral=True)
         return
     
     if data[user_id]["balance"] < amount:
-        await ctx.respond("❌ Insufficient balance!")
+        await interaction.response.send_message("❌ Insufficient balance!", ephemeral=True)
         return
     
     if choice.lower() not in ["heads", "tails", "h", "t"]:
-        await ctx.respond("❌ Choose 'heads' or 'tails'!")
+        await interaction.response.send_message("❌ Choose 'heads' or 'tails'!", ephemeral=True)
         return
     
     # Normalize choice
@@ -327,13 +345,13 @@ async def coinflip(ctx, amount: int, choice: str):
     embed.add_field(name="Result", value=f"`{result.title()}`", inline=True)
     embed.add_field(name="New Balance", value=f"`{data[user_id]['balance']}`", inline=False)
     
-    await ctx.respond(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(description="Roll dice")
-async def dice(ctx, sides: int = 6):
+@bot.tree.command(name="dice", description="Roll dice")
+async def dice(interaction: discord.Interaction, sides: int = 6):
     """Roll a dice"""
     if sides < 2:
-        await ctx.respond("❌ Dice must have at least 2 sides!")
+        await interaction.response.send_message("❌ Dice must have at least 2 sides!", ephemeral=True)
         return
     
     result = random.randint(1, sides)
@@ -345,14 +363,14 @@ async def dice(ctx, sides: int = 6):
     )
     embed.add_field(name="Sides", value=f"`{sides}`", inline=True)
     
-    await ctx.respond(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
 # ============================================
 # UTILITY COMMANDS
 # ============================================
 
-@bot.slash_command(description="Bot info and commands")
-async def help(ctx):
+@bot.tree.command(name="help", description="Bot info and commands")
+async def help(interaction: discord.Interaction):
     """Help menu"""
     embed = discord.Embed(
         title="🤖 Bot Commands",
@@ -372,8 +390,8 @@ async def help(ctx):
     embed.add_field(
         name="🎮 Gaming",
         value="""
-`/active-players` - Who's gaming now
-`/playtime @member` - See playtime stats
+`/active_players` - Who's gaming now
+`/playtime` - See playtime stats (optional: @member)
         """,
         inline=False
     )
@@ -387,10 +405,10 @@ async def help(ctx):
         inline=False
     )
     
-    await ctx.respond(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(description="Server stats")
-async def stats(ctx):
+@bot.tree.command(name="stats", description="Server stats")
+async def stats(interaction: discord.Interaction):
     """Show server statistics"""
     data = load_data()
     
@@ -401,11 +419,12 @@ async def stats(ctx):
         title="📊 Server Statistics",
         color=discord.Color.gold()
     )
-    embed.add_field(name="Members", value=f"`{ctx.guild.member_count}`", inline=True)
+    if interaction.guild:
+        embed.add_field(name="Members", value=f"`{interaction.guild.member_count}`", inline=True)
     embed.add_field(name="Tracked Players", value=f"`{total_users}`", inline=True)
     embed.add_field(name="Total Coins", value=f"`{total_balance}`", inline=True)
     
-    await ctx.respond(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
 # ============================================
 # RUN BOT
