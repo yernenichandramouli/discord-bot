@@ -1,6 +1,3 @@
-# bot.py - Complete Discord Bot Code (Ready to Use)
-
-```python
 import discord
 from discord.ext import commands
 from discord import slash_commands
