@@ -1,4 +1,4 @@
-# bot.py - FIXED for Discord.py 2.0+
+# bot.py - COMPLETE FIXED VERSION with Playtime Bug Resolved
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -27,14 +27,20 @@ DATA_FILE = "game_data.json"
 def load_data():
     """Load game data from JSON file"""
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'r') as f:
-            return json.load(f)
+        try:
+            with open(DATA_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return {}
     return {}
 
 def save_data(data):
     """Save game data to JSON file"""
-    with open(DATA_FILE, 'w') as f:
-        json.dump(data, f, indent=2)
+    try:
+        with open(DATA_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"Error saving data: {e}")
 
 def init_user(user_id, data):
     """Initialize user if they don't exist"""
@@ -80,43 +86,70 @@ async def on_ready():
 @bot.event
 async def on_presence_update(before, after):
     """Track when users start/stop gaming"""
-    if after.bot: return
+    if after.bot:
+        return
     
-    data = load_data()
-    user_id = str(after.id)
-    
-    # Initialize user if needed
-    data = init_user(user_id, data)
-    
-    # Check if user started playing a game
-    if (after.activity and 
-        after.activity.type == discord.ActivityType.playing):
+    try:
+        data = load_data()
+        user_id = str(after.id)
         
-        # If they weren't playing before or playing different game
-        if (not before.activity or 
-            before.activity.name != after.activity.name):
+        # Initialize user if needed
+        data = init_user(user_id, data)
+        
+        # Get current activity
+        before_activity = before.activity if before.activity else None
+        after_activity = after.activity if after.activity else None
+        
+        # Check if user started playing a game
+        if after_activity and after_activity.type == discord.ActivityType.playing:
+            # Check if it's a new game session
+            game_name = after_activity.name
+            current_stored_game = data[user_id].get("current_game")
             
-            data[user_id]["current_game"] = after.activity.name
-            data[user_id]["game_start_time"] = datetime.now().isoformat()
-    
-    # Check if user stopped playing
-    elif (before.activity and 
-          before.activity.type == discord.ActivityType.playing and
-          (not after.activity or 
-           after.activity.type != discord.ActivityType.playing)):
+            # Only record if it's a new game or no game was being tracked
+            if current_stored_game != game_name:
+                # If there was a previous game, close that session first
+                if current_stored_game and data[user_id].get("game_start_time"):
+                    old_session = {
+                        "game": current_stored_game,
+                        "start": data[user_id]["game_start_time"],
+                        "end": datetime.now().isoformat()
+                    }
+                    data[user_id]["playtime_sessions"].append(old_session)
+                    print(f"📊 Saved session: {current_stored_game} for user {after.name}")
+                
+                # Start new game session
+                data[user_id]["current_game"] = game_name
+                data[user_id]["game_start_time"] = datetime.now().isoformat()
+                print(f"🎮 {after.name} started playing: {game_name}")
         
-        # Save session
-        if data[user_id].get("game_start_time"):
-            session = {
-                "game": data[user_id].get("current_game"),
-                "start": data[user_id].get("game_start_time"),
-                "end": datetime.now().isoformat()
-            }
-            data[user_id]["playtime_sessions"].append(session)
-            data[user_id]["current_game"] = None
-            data[user_id]["game_start_time"] = None
-    
-    save_data(data)
+        # Check if user stopped playing
+        elif before_activity and before_activity.type == discord.ActivityType.playing:
+            # User stopped playing
+            if data[user_id].get("game_start_time") and data[user_id].get("current_game"):
+                session = {
+                    "game": data[user_id]["current_game"],
+                    "start": data[user_id]["game_start_time"],
+                    "end": datetime.now().isoformat()
+                }
+                data[user_id]["playtime_sessions"].append(session)
+                
+                # Calculate duration for log
+                try:
+                    start_dt = datetime.fromisoformat(session["start"])
+                    end_dt = datetime.fromisoformat(session["end"])
+                    duration_minutes = (end_dt - start_dt).total_seconds() / 60
+                    print(f"📊 {after.name} stopped playing {session['game']} - Duration: {duration_minutes:.1f} minutes")
+                except:
+                    print(f"📊 Saved session for {after.name}")
+                
+                # Clear current game
+                data[user_id]["current_game"] = None
+                data[user_id]["game_start_time"] = None
+        
+        save_data(data)
+    except Exception as e:
+        print(f"Error in on_presence_update: {e}")
 
 # ============================================
 # ECONOMY COMMANDS
@@ -245,7 +278,7 @@ async def active_players(interaction: discord.Interaction):
 
 @bot.tree.command(name="playtime", description="See someone's playtime stats")
 async def playtime(interaction: discord.Interaction, member: discord.Member = None):
-    """Show playtime statistics"""
+    """Show playtime statistics - FIXED VERSION"""
     if member is None:
         member = interaction.user
     
@@ -255,42 +288,115 @@ async def playtime(interaction: discord.Interaction, member: discord.Member = No
     
     sessions = data[user_id]["playtime_sessions"]
     
-    if not sessions:
-        await interaction.response.send_message(f"❌ {member.name} has no playtime data yet.")
-        return
-    
-    # Calculate total playtime
+    # Calculate total playtime from COMPLETED sessions
     total_seconds = 0
     games_played = {}
+    completed_sessions = 0
+    
+    print(f"📊 Calculating playtime for {member.name}")
+    print(f"📊 Total stored sessions: {len(sessions)}")
     
     for session in sessions:
         try:
-            start = datetime.fromisoformat(session["start"])
-            end = datetime.fromisoformat(session["end"])
-            duration = (end - start).total_seconds()
-            total_seconds += duration
-            
+            start_str = session.get("start")
+            end_str = session.get("end")
             game = session.get("game", "Unknown")
+            
+            if not start_str or not end_str:
+                print(f"⚠️ Skipping incomplete session: {session}")
+                continue
+            
+            start = datetime.fromisoformat(start_str)
+            end = datetime.fromisoformat(end_str)
+            duration = (end - start).total_seconds()
+            
+            # Skip invalid durations
+            if duration < 0 or duration > 86400:  # Skip if negative or > 24 hours
+                print(f"⚠️ Skipping invalid duration: {duration}s for game {game}")
+                continue
+            
+            total_seconds += duration
+            completed_sessions += 1
+            
             if game not in games_played:
                 games_played[game] = 0
             games_played[game] += duration
-        except:
+            
+            print(f"✅ Session: {game} - {duration/60:.1f} minutes")
+            
+        except Exception as e:
+            print(f"❌ Error processing session: {e} - Session: {session}")
             continue
     
+    # ADD ONGOING SESSION TIME (if currently playing)
+    current_game = data[user_id].get("current_game")
+    game_start_time = data[user_id].get("game_start_time")
+    ongoing_duration = 0
+    
+    if current_game and game_start_time:
+        try:
+            start = datetime.fromisoformat(game_start_time)
+            ongoing_duration = (datetime.now() - start).total_seconds()
+            
+            if ongoing_duration > 0 and ongoing_duration < 86400:  # Valid ongoing session
+                total_seconds += ongoing_duration
+                
+                if current_game not in games_played:
+                    games_played[current_game] = 0
+                games_played[current_game] += ongoing_duration
+                
+                print(f"🎮 Ongoing session: {current_game} - {ongoing_duration/60:.1f} minutes")
+        except Exception as e:
+            print(f"❌ Error processing ongoing session: {e}")
+    
+    print(f"📊 Total playtime: {total_seconds/3600:.2f} hours")
+    
+    # Check if user has any playtime at all
+    if total_seconds == 0 and completed_sessions == 0:
+        await interaction.response.send_message(
+            f"❌ {member.name} has no playtime data yet.\n"
+            f"💡 Make sure Discord is showing your game activity!",
+            ephemeral=True
+        )
+        return
+    
     total_hours = total_seconds / 3600
+    total_minutes = total_seconds / 60
     
     embed = discord.Embed(
         title=f"🕹️ {member.name}'s Playtime",
         color=discord.Color.purple()
     )
-    embed.add_field(name="Total Playtime", value=f"`{total_hours:.1f}` hours", inline=False)
-    embed.add_field(name="Total Sessions", value=f"`{len(sessions)}`", inline=True)
+    
+    # Show in hours if > 1 hour, otherwise minutes
+    if total_hours >= 1:
+        embed.add_field(name="Total Playtime", value=f"`{total_hours:.1f}` hours", inline=False)
+    else:
+        embed.add_field(name="Total Playtime", value=f"`{total_minutes:.1f}` minutes", inline=False)
+    
+    embed.add_field(name="Completed Sessions", value=f"`{completed_sessions}`", inline=True)
+    
+    # Show if currently playing
+    if current_game and ongoing_duration > 0:
+        ongoing_minutes = ongoing_duration / 60
+        embed.add_field(
+            name="🎮 Currently Playing", 
+            value=f"`{current_game}`\n({ongoing_minutes:.1f} min)", 
+            inline=True
+        )
     
     # Top games
     if games_played:
         top_game = max(games_played, key=games_played.get)
         top_hours = games_played[top_game] / 3600
-        embed.add_field(name="Most Played Game", value=f"`{top_game}` ({top_hours:.1f}h)", inline=True)
+        top_minutes = games_played[top_game] / 60
+        
+        if top_hours >= 1:
+            embed.add_field(name="Most Played Game", value=f"`{top_game}`\n({top_hours:.1f}h)", inline=False)
+        else:
+            embed.add_field(name="Most Played Game", value=f"`{top_game}`\n({top_minutes:.1f} min)", inline=False)
+    
+    embed.set_footer(text=f"Total sessions tracked: {len(sessions)}")
     
     await interaction.response.send_message(embed=embed)
 
@@ -299,7 +405,7 @@ async def playtime(interaction: discord.Interaction, member: discord.Member = No
 # ============================================
 
 @bot.tree.command(name="coinflip", description="Flip a coin to gamble")
-@app_commands.describe(choice="heads or tails")
+@app_commands.describe(amount="Amount to bet", choice="heads or tails")
 async def coinflip(interaction: discord.Interaction, amount: int, choice: str):
     """Gamble coins on a coin flip (heads/tails)"""
     data = load_data()
@@ -348,6 +454,7 @@ async def coinflip(interaction: discord.Interaction, amount: int, choice: str):
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="dice", description="Roll dice")
+@app_commands.describe(sides="Number of sides on the dice")
 async def dice(interaction: discord.Interaction, sides: int = 6):
     """Roll a dice"""
     if sides < 2:
